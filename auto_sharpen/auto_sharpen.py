@@ -10,48 +10,80 @@ bl_info = {
 
 import bpy
 
-def sharpen_crease_from_autosmooth_angle(mode: str):
-    prev_mode = bpy.context.object.mode
+from contextlib import contextmanager
 
-    objects = [obj for obj in bpy.context.selected_objects if obj.type == 'MESH']
-    if objects:
+@contextmanager
+def selected_meshes():
+    selection_mode = bpy.context.object.mode
+    selected_objects = [obj for obj in bpy.context.selected_objects]
 
+    meshes = [obj for obj in selected_objects if obj.type == 'MESH']
+
+    # deselect all objects
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.object.select_all(action='DESELECT')
+
+    try:
+        yield meshes
+    finally:
         bpy.ops.object.mode_set(mode='OBJECT')
-        bpy.ops.object.select_all(action='DESELECT')
-
-        for obj in objects:
+        for obj in selected_objects:
             obj.select_set(True)
             bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.mode_set(mode=selection_mode)
 
-            bpy.ops.object.mode_set(mode='EDIT')
+# put mesh in edit mode with edge selection
+@contextmanager
+def edit_mesh(mesh):
+    # select mesh
+    mesh.select_set(True)
+    bpy.context.view_layer.objects.active = mesh
 
-            bpy.ops.mesh.select_mode(use_extend=False, use_expand=True, type='EDGE')
-            bpy.ops.mesh.select_all(action='DESELECT')
+    # deselect all edges
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_mode(use_extend=False, use_expand=True, type='EDGE')
+    bpy.ops.mesh.select_all(action='DESELECT')
 
-            angle = bpy.context.object.data.auto_smooth_angle
-            bpy.ops.mesh.edges_select_sharp(sharpness=angle)
+    try:
+        yield mesh
+    finally:
+        bpy.ops.object.mode_set(mode='OBJECT')
+        mesh.select_set(False)
 
-            if mode == 'sharpen':
-                bpy.ops.mesh.mark_sharp()
-            elif mode == 'crease':
-                bpy.ops.transform.edge_crease(value=1)
+def edit_mesh_edges():
+    with selected_meshes() as meshes:
+        for mesh in meshes:
+            with edit_mesh(mesh) as mesh:
+                yield mesh
 
-            bpy.ops.object.mode_set(mode='OBJECT')
-            obj.select_set(False)
-        for obj in objects:
-            obj.select_set(True)
-        bpy.ops.object.mode_set(mode=prev_mode)
+def sharpen_crease_from_autosmooth_angle(mode: str):
+    for _mesh in edit_mesh_edges():
+        angle = bpy.context.object.data.auto_smooth_angle
+        bpy.ops.mesh.edges_select_sharp(sharpness=angle)
+
+        if mode == 'sharpen':
+            bpy.ops.mesh.mark_sharp()
+        elif mode == 'crease':
+            bpy.ops.transform.edge_crease(value=1)
 
 def copy_sharp_crease(mode: str):
-    for obj in bpy.context.selected_objects:
-        if obj.type == 'MESH':
-            for e in obj.data.edges:
-                if mode == 'crease':
-                    if e.use_edge_sharp:
-                        e.crease = 1
-                elif mode == 'sharp':
-                    if e.crease >= 0.5:
-                        e.use_edge_sharp = True
+    for mesh in edit_mesh_edges():
+
+        # edge selection needs to happen in object mode for some reason
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+        for e in mesh.data.edges:
+            if mode == 'crease' and e.use_edge_sharp:
+                e.select = True
+            elif mode == 'sharpen' and e.crease > 0.0:
+                e.select = True
+
+        bpy.ops.object.mode_set(mode='EDIT')
+
+        if mode == 'crease':
+            bpy.ops.transform.edge_crease(value=1)
+        elif mode == 'sharpen':
+            bpy.ops.mesh.mark_sharp()
 
 
 class OBJECT_OT_AutoSharpen(bpy.types.Operator):
@@ -77,7 +109,7 @@ class OBJECT_OT_AutoCrease(bpy.types.Operator):
 class OBJECT_OT_CreaseSharp(bpy.types.Operator):
     '''Make sharp edges also creases'''
     bl_idname = 'object.crease_sharp'
-    bl_label = 'Sharp Crease'
+    bl_label = 'Crease Sharp'
     bi_description = 'Make all sharp edges also creases'
 
     def execute(self, context):
@@ -87,37 +119,20 @@ class OBJECT_OT_CreaseSharp(bpy.types.Operator):
 class OBJECT_OT_SharpCrease(bpy.types.Operator):
     '''Make crease edges also sharp'''
     bl_idname = 'object.sharp_crease'
-    bl_label = 'Crease Sharp'
+    bl_label = 'Sharpen Crease'
     bi_description = 'Make all crease edges also sharp'
 
     def execute(self, context):
-        copy_sharp_crease(mode='sharp')
+        copy_sharp_crease(mode='sharpen')
         return {'FINISHED'}
 
 
-def button_sharpen(self, context):
-    self.layout.operator(
-        OBJECT_OT_AutoSharpen.bl_idname,
-        text='Auto Sharpen'
-    )
-
-def button_crease(self, context):
-    self.layout.operator(
-        OBJECT_OT_AutoCrease.bl_idname,
-        text='Auto Crease'
-    )
-
-def button_crease_sharp(self, context):
-    self.layout.operator(
-        OBJECT_OT_CreaseSharp.bl_idname,
-        text='Sharp Crease'
-    )
-
-def button_sharp_crease(self, context):
-    self.layout.operator(
-        OBJECT_OT_SharpCrease.bl_idname,
-        text='Crease Sharp'
-    )
+def buttons(self, context):
+    for op in [OBJECT_OT_AutoSharpen, OBJECT_OT_AutoCrease, OBJECT_OT_CreaseSharp, OBJECT_OT_SharpCrease]:
+        self.layout.operator(
+            op.bl_idname,
+            text=op.bl_label
+        )
 
 def register():
     bpy.utils.register_class(OBJECT_OT_AutoSharpen)
@@ -125,26 +140,14 @@ def register():
     bpy.utils.register_class(OBJECT_OT_CreaseSharp)
     bpy.utils.register_class(OBJECT_OT_SharpCrease)
 
-    bpy.types.VIEW3D_MT_object_context_menu.append(button_sharpen)
-    bpy.types.VIEW3D_MT_object_context_menu.append(button_crease)
-    bpy.types.VIEW3D_MT_object_context_menu.append(button_crease_sharp)
-    bpy.types.VIEW3D_MT_object_context_menu.append(button_sharp_crease)
+    bpy.types.VIEW3D_MT_object_context_menu.append(buttons)
 
-    bpy.types.VIEW3D_MT_edit_mesh_context_menu.append(button_sharpen)
-    bpy.types.VIEW3D_MT_edit_mesh_context_menu.append(button_crease)
-    bpy.types.VIEW3D_MT_edit_mesh_context_menu.append(button_crease_sharp)
-    bpy.types.VIEW3D_MT_edit_mesh_context_menu.append(button_sharp_crease)
+    bpy.types.VIEW3D_MT_edit_mesh_context_menu.append(buttons)
 
 def unregister():
-    bpy.types.VIEW3D_MT_object_context_menu.remove(button_sharpen)
-    bpy.types.VIEW3D_MT_object_context_menu.remove(button_crease)
-    bpy.types.VIEW3D_MT_object_context_menu.remove(button_crease_sharp)
-    bpy.types.VIEW3D_MT_object_context_menu.remove(button_sharp_crease)
+    bpy.types.VIEW3D_MT_object_context_menu.remove(buttons)
 
-    bpy.types.VIEW3D_MT_edit_mesh_context_menu.remove(button_sharpen)
-    bpy.types.VIEW3D_MT_edit_mesh_context_menu.remove(button_crease)
-    bpy.types.VIEW3D_MT_edit_mesh_context_menu.remove(button_crease_sharp)
-    bpy.types.VIEW3D_MT_edit_mesh_context_menu.remove(button_sharp_crease)
+    bpy.types.VIEW3D_MT_edit_mesh_context_menu.remove(buttons)
 
     bpy.utils.unregister_class(OBJECT_OT_AutoSharpen)
     bpy.utils.unregister_class(OBJECT_OT_AutoCrease)
