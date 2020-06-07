@@ -29,7 +29,7 @@ class VIEW3D_OT_LockViewRotation(bpy.types.Operator):
 def lock_rotation_button(self, context):
     self.layout.operator(
         VIEW3D_OT_LockViewRotation.bl_idname,
-        text='Lock Rotation',
+        text='Lock View Rotation',
         icon='PLUGIN',
     )
 
